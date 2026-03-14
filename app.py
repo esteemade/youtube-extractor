@@ -74,6 +74,7 @@ def extract():
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
+            "cookiefile": "cookies.txt"
             "nocheckcertificate": True,
             "socket_timeout": 20,
             "age_limit": 99,  # Allow age-restricted content
