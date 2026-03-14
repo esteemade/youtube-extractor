@@ -7,6 +7,9 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 app = Flask(__name__)
 
+# Thread pool (shared for all requests)
+executor = ThreadPoolExecutor(max_workers=2)
+
 # Cache (video_id -> (timestamp, payload))
 CACHE = {}
 CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
@@ -15,7 +18,7 @@ CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 RATE_LIMIT_SECONDS = 1
 LAST_REQUEST_TIME = 0
 
-# Improved YouTube ID regex
+# YouTube ID detection
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})")
 
 
@@ -79,6 +82,7 @@ def _build_ydl_opts(use_cookies=True):
 
     return ydl_opts
 
+
 def run_extraction(url, ydl_opts):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
@@ -95,6 +99,7 @@ def home():
 
 @app.route("/extract", methods=["GET"])
 def extract():
+    global LAST_REQUEST_TIME
 
     url = request.args.get("url")
 
@@ -106,7 +111,7 @@ def extract():
     if not video_id:
         return jsonify({"error": "Invalid YouTube URL"}), 400
 
-    # Check cache
+    # Cache check
     now = time.time()
     cached = CACHE.get(video_id)
 
@@ -120,9 +125,7 @@ def extract():
 
     try:
 
-        global LAST_REQUEST_TIME
-
-        now = time.time()
+        # Rate limiting
         elapsed = now - LAST_REQUEST_TIME
 
         if elapsed < RATE_LIMIT_SECONDS:
@@ -132,7 +135,6 @@ def extract():
 
         ydl_opts = _build_ydl_opts(use_cookies=True)
 
-        executor = ThreadPoolExecutor(max_workers=1)
         future = executor.submit(run_extraction, url, ydl_opts)
 
         try:
@@ -158,11 +160,9 @@ def extract():
         for f in formats:
 
             stream_url = f.get("url")
-
             if not stream_url:
                 continue
 
-            # Skip most HLS streams
             if "m3u8" in stream_url and "googlevideo" not in stream_url:
                 continue
 
@@ -172,7 +172,7 @@ def extract():
             height = f.get("height") or 0
             abr = f.get("abr") or 0
 
-            # Progressive stream
+            # Progressive
             if vcodec != "none" and acodec != "none":
                 progressive_url = stream_url
                 break
@@ -213,21 +213,8 @@ def extract():
             result["audio_url"] = audio_only_url
 
         else:
-
-            format_info = [
-                {
-                    "format_id": f.get("format_id"),
-                    "ext": f.get("ext"),
-                    "vcodec": f.get("vcodec"),
-                    "acodec": f.get("acodec"),
-                }
-                for f in formats
-            ]
-
             return jsonify({
-                "error": "No playable streams found",
-                "total_formats": len(formats),
-                "available_formats": format_info
+                "error": "No playable streams found"
             }), 500
 
         CACHE[video_id] = (time.time(), result)
@@ -239,7 +226,6 @@ def extract():
         detail_text = str(e)
 
         if "Sign in to confirm you're not a bot" in detail_text:
-
             return jsonify({
                 "error": "Authentication required",
                 "detail": "YouTube requires login cookies"
@@ -251,14 +237,13 @@ def extract():
         }), 500
 
     except Exception as e:
-
         return jsonify({
             "error": "Extraction failed",
             "detail": str(e)
         }), 500
 
 
-# Important for Render
+# Render port handling
 if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 10000))
