@@ -1,7 +1,7 @@
-# working server for YouTube backend links.
 from flask import Flask, request, jsonify
 import yt_dlp
 import time
+import os
 import re
 
 app = Flask(__name__)
@@ -11,7 +11,54 @@ app = Flask(__name__)
 CACHE = {}
 CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 
+# Rate-control: avoid making many concurrent back-to-back yt-dlp requests.
+RATE_LIMIT_SECONDS = 1
+LAST_REQUEST_TIME = 0
+
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/v/|/embed/)([A-Za-z0-9_-]{11})")
+
+
+def _has_valid_cookies_file(path="cookies.txt") -> bool:
+    try:
+        if not os.path.isfile(path):
+            return False
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            first_line = f.readline().strip()
+            return first_line.startswith("# Netscape")
+    except Exception:
+        return False
+
+
+def _build_ydl_opts(use_cookies=True):
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "nocheckcertificate": True,
+        "socket_timeout": 20,
+        "age_limit": 99,
+        "geo_bypass": True,
+        "geo_bypass_country": "US",
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9"
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]
+            }
+        },
+    }
+
+    if use_cookies and _has_valid_cookies_file("cookies.txt"):
+        ydl_opts["cookiefile"] = "cookies.txt"
+
+    return ydl_opts
 
 
 def extract_video_id(url: str) -> str | None:
@@ -58,30 +105,28 @@ def extract():
 
 
     try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "nocheckcertificate": True,
-            "cookiefile": "cookies.txt"
-            "socket_timeout": 20,
-            "age_limit": 99,  # Allow age-restricted content
-            "geo_bypass": True,  # Bypass geo-restrictions
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            },
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android", "web"]
-                }
-            },
-            # Don't request a specific output format here; we only need metadata.
-            # Requesting a format that doesn't exist can cause a "Requested format is not available" error.
-        }
+        # Rate control: ensure a small delay between yt-dlp requests.
+        global LAST_REQUEST_TIME
+        now = time.time()
+        elapsed = now - LAST_REQUEST_TIME
+        if elapsed < RATE_LIMIT_SECONDS:
+            time.sleep(RATE_LIMIT_SECONDS - elapsed)
+        LAST_REQUEST_TIME = time.time()
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        ydl_opts = _build_ydl_opts(use_cookies=True)
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except yt_dlp.utils.DownloadError as e:
+            error_text = str(e)
+            if "does not look like a Netscape format cookies file" in error_text:
+                # Fallback to run without cookies file if it's invalid.
+                ydl_opts = _build_ydl_opts(use_cookies=False)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            else:
+                raise
 
         formats = info.get("formats", [])
 
@@ -173,10 +218,21 @@ def extract():
         return jsonify(result)
 
     except yt_dlp.utils.DownloadError as e:
-        # Provide better error info for common yt-dlp failures.
+        detail_text = str(e)
+        if "Sign in to confirm you\u2019re not a bot" in detail_text or "Sign in to confirm you\u2019re not a bot" in detail_text.replace("\u2019", "'"):
+            return jsonify({
+                "error": "Authentication required",
+                "detail": (
+                    "YouTube requires login cookies for this video. "
+                    "Use a valid Netscape-format cookies file (cookies.txt), "
+                    "or pass cookies using yt-dlp options like --cookies-from-browser. "
+                    "See https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+                )
+            }), 403
+
         return jsonify({
             "error": "Extraction failed",
-            "detail": str(e)
+            "detail": detail_text
         }), 500
 
     except Exception as e:
