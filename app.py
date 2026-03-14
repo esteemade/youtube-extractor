@@ -218,10 +218,21 @@ def extract():
         return jsonify(result)
 
     except yt_dlp.utils.DownloadError as e:
-        # Provide better error info for common yt-dlp failures.
+        detail_text = str(e)
+        if "Sign in to confirm you\u2019re not a bot" in detail_text or "Sign in to confirm you\u2019re not a bot" in detail_text.replace("\u2019", "'"):
+            return jsonify({
+                "error": "Authentication required",
+                "detail": (
+                    "YouTube requires login cookies for this video. "
+                    "Use a valid Netscape-format cookies file (cookies.txt), "
+                    "or pass cookies using yt-dlp options like --cookies-from-browser. "
+                    "See https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+                )
+            }), 403
+
         return jsonify({
             "error": "Extraction failed",
-            "detail": str(e)
+            "detail": detail_text
         }), 500
 
     except Exception as e:
