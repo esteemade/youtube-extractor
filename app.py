@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import yt_dlp
 import time
+import os
 import re
 
 app = Flask(__name__)
@@ -14,17 +15,60 @@ CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 RATE_LIMIT_SECONDS = 1
 LAST_REQUEST_TIME = 0
 
-YOUTUBE_ID_RE = re.compile(
-    r"(?:v=|youtu\.be/|/shorts/|/v/|/embed/)([A-Za-z0-9_-]{11})"
-)
+YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/v/|/embed/)([A-Za-z0-9_-]{11})")
+
+
+def _has_valid_cookies_file(path="cookies.txt") -> bool:
+    try:
+        if not os.path.isfile(path):
+            return False
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            first_line = f.readline().strip()
+            return first_line.startswith("# Netscape")
+    except Exception:
+        return False
+
+
+def _build_ydl_opts(use_cookies=True):
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "nocheckcertificate": True,
+        "socket_timeout": 20,
+        "age_limit": 99,
+        "geo_bypass": True,
+        "geo_bypass_country": "US",
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9"
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]
+            }
+        },
+    }
+
+    if use_cookies and _has_valid_cookies_file("cookies.txt"):
+        ydl_opts["cookiefile"] = "cookies.txt"
+
+    return ydl_opts
 
 
 def extract_video_id(url: str) -> str | None:
     if not url:
         return None
+
     m = YOUTUBE_ID_RE.search(url)
     if m:
         return m.group(1)
+
     return None
 
 
@@ -40,6 +84,7 @@ def home():
 @app.route("/extract", methods=["GET"])
 def extract():
     url = request.args.get("url")
+
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
@@ -53,9 +98,11 @@ def extract():
     if cached:
         created_at, payload = cached
         if now - created_at < CACHE_TTL_SECONDS:
+            # Return cached response directly.
             return jsonify(payload)
         else:
             del CACHE[video_id]
+
 
     try:
         # Rate control: ensure a small delay between yt-dlp requests.
@@ -66,64 +113,59 @@ def extract():
             time.sleep(RATE_LIMIT_SECONDS - elapsed)
         LAST_REQUEST_TIME = time.time()
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "cookiefile": "cookies.txt",
-            "nocheckcertificate": True,
-            "socket_timeout": 20,
-            "age_limit": 99,
-            "geo_bypass": True,
-            "geo_bypass_country": "US",
-            "http_headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Accept-Language": "en-US,en;q=0.9"
-            },
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android"]
-                }
-            },
-        }
+        ydl_opts = _build_ydl_opts(use_cookies=True)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except yt_dlp.utils.DownloadError as e:
+            error_text = str(e)
+            if "does not look like a Netscape format cookies file" in error_text:
+                # Fallback to run without cookies file if it's invalid.
+                ydl_opts = _build_ydl_opts(use_cookies=False)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            else:
+                raise
 
         formats = info.get("formats", [])
+
         progressive_url = None
         video_only_url = None
         audio_only_url = None
+
         best_video_height = -1
         best_audio_bitrate = -1
 
         for f in formats:
+
             stream_url = f.get("url")
             if not stream_url:
                 continue
 
+            ext = f.get("ext")
             vcodec = f.get("vcodec")
             acodec = f.get("acodec")
             height = f.get("height") or 0
             abr = f.get("abr") or 0
 
+            # Skip HLS playlists
             if "m3u8" in stream_url:
                 continue
 
+            # Progressive stream (video + audio)
+            # Accept any container (mp4/webm/etc) as long as it contains both video and audio.
             if vcodec != "none" and acodec != "none":
                 progressive_url = stream_url
                 break
 
+            # Video-only stream
             if vcodec != "none" and acodec == "none":
                 if height > best_video_height:
                     best_video_height = height
                     video_only_url = stream_url
 
+            # Audio-only stream
             if acodec != "none" and vcodec == "none":
                 if abr > best_audio_bitrate:
                     best_audio_bitrate = abr
@@ -138,36 +180,55 @@ def extract():
         if progressive_url:
             result["type"] = "progressive"
             result["url"] = progressive_url
+
         elif video_only_url and audio_only_url:
             result["type"] = "adaptive"
             result["video_url"] = video_only_url
             result["audio_url"] = audio_only_url
+
         elif video_only_url:
             result["type"] = "video_only"
             result["video_url"] = video_only_url
+
         elif audio_only_url:
             result["type"] = "audio_only"
             result["audio_url"] = audio_only_url
-        else:
-            format_info = [{
-                "format_id": f.get("format_id"),
-                "ext": f.get("ext"),
-                "vcodec": f.get("vcodec"),
-                "acodec": f.get("acodec"),
-            } for f in formats]
-            return jsonify({
-                "error": "No playable streams found",
-                "total_formats": len(formats),
-                "available_formats": format_info,
-            }), 500
 
-        CACHE[video_id] = (time.time(), result)
+        else:
+            # No usable streams were found; return a sample of the available formats
+            # so the caller can diagnose what is available.
+            format_info = [
+                {
+                    "format_id": f.get("format_id"),
+                    "ext": f.get("ext"),
+                    "vcodec": f.get("vcodec"),
+                    "acodec": f.get("acodec"),
+                }
+                for f in formats  # Show all formats for debugging
+            ]
+            return (
+                jsonify({
+                    "error": "No playable streams found",
+                    "total_formats": len(formats),
+                    "available_formats": format_info,
+                }),
+                500,
+            )
+
         return jsonify(result)
 
     except yt_dlp.utils.DownloadError as e:
-        return jsonify({"error": "Extraction failed", "detail": str(e)}), 500
+        # Provide better error info for common yt-dlp failures.
+        return jsonify({
+            "error": "Extraction failed",
+            "detail": str(e)
+        }), 500
+
     except Exception as e:
-        return jsonify({"error": "Extraction failed", "detail": str(e)}), 500
+        return jsonify({
+            "error": "Extraction failed",
+            "detail": str(e)
+        }), 500
 
 
 if __name__ == "__main__":
