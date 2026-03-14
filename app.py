@@ -10,6 +10,10 @@ app = Flask(__name__)
 CACHE = {}
 CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 
+# Rate-control: avoid making many concurrent back-to-back yt-dlp requests.
+RATE_LIMIT_SECONDS = 1
+LAST_REQUEST_TIME = 0
+
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/v/|/embed/)([A-Za-z0-9_-]{11})")
 
 
@@ -57,6 +61,14 @@ def extract():
 
 
     try:
+        # Rate control: ensure a small delay between yt-dlp requests.
+        global LAST_REQUEST_TIME
+        now = time.time()
+        elapsed = now - LAST_REQUEST_TIME
+        if elapsed < RATE_LIMIT_SECONDS:
+            time.sleep(RATE_LIMIT_SECONDS - elapsed)
+        LAST_REQUEST_TIME = time.time()
+
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -66,12 +78,14 @@ def extract():
             "socket_timeout": 20,
             "age_limit": 99,  # Allow age-restricted content
             "geo_bypass": True,  # Bypass geo-restrictions
+            "geo_bypass_country": "US",
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9"
             },
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web"]
+                    "player_client": ["android"]
                 }
             },
             # Don't request a specific output format here; we only need metadata.
