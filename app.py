@@ -29,7 +29,7 @@ def _has_valid_cookies_file(path="cookies.txt") -> bool:
         return False
 
 
-def _build_ydl_opts(use_cookies=True):
+def _build_ydl_opts(use_cookies=True, format_spec="bestvideo+bestaudio/best"):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
@@ -40,6 +40,7 @@ def _build_ydl_opts(use_cookies=True):
         "age_limit": 99,
         "geo_bypass": True,
         "geo_bypass_country": "US",
+        "format": format_spec,
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -121,10 +122,19 @@ def extract():
         except yt_dlp.utils.DownloadError as e:
             error_text = str(e)
             if "does not look like a Netscape format cookies file" in error_text:
-                # Fallback to run without cookies file if it's invalid.
                 ydl_opts = _build_ydl_opts(use_cookies=False)
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
+            elif "Requested format is not available" in error_text:
+                # If requested format comes back invalid, try a less strict format.
+                ydl_opts = _build_ydl_opts(use_cookies=True, format_spec="best")
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                except yt_dlp.utils.DownloadError:
+                    ydl_opts = _build_ydl_opts(use_cookies=False, format_spec="best")
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
             else:
                 raise
 
