@@ -58,9 +58,6 @@ def _build_ydl_opts(use_cookies=True):
         "geo_bypass": True,
         "geo_bypass_country": "US",
 
-        # Format fallback chain (prevents format errors)
-        "format": "bv*+ba/b/bv+ba",
-
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -70,7 +67,6 @@ def _build_ydl_opts(use_cookies=True):
             "Accept-Language": "en-US,en;q=0.9",
         },
 
-        # Helps reduce bot detection
         "extractor_args": {
             "youtube": {
                 "player_client": ["android"]
@@ -82,7 +78,6 @@ def _build_ydl_opts(use_cookies=True):
         ydl_opts["cookiefile"] = "cookies.txt"
 
     return ydl_opts
-
 
 def run_extraction(url, ydl_opts):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
