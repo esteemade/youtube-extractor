@@ -24,10 +24,6 @@
 .youtube.com	TRUE	/	TRUE	0	YSC	cCqb6lMPnWU
 .youtube.com	TRUE	/	TRUE	1789048412	__Secure-ROLLOUT_TOKEN	CNydnejN65zQowEQqMvbkd-akwMYj9io_cSfkwM%3D
 
-# Netscape HTTP Cookie File
-# https://curl.haxx.se/rfc/cookie_spec.html
-# This is a generated file! Do not edit.
-
 .youtube.com	TRUE	/	FALSE	1807891287	SID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTwChJ65bwvB3OjMQq-2oNKQACgYKAWsSARISFQHGX2MiVdD7lwNubPf--WOYLs7OLhoVAUF8yKrKX4PJcO8136wA1-BiwgWg0076
 .youtube.com	TRUE	/	TRUE	1807891287	__Secure-1PSID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTfGXhWMwvsu_sx-tFdEHdTAACgYKAfgSARISFQHGX2MiLtb2LcGdBfbPbw9G4GeNaRoVAUF8yKpq1gdAK2rhnUTvAmdDTaZu0076
 .youtube.com	TRUE	/	TRUE	1807891287	__Secure-3PSID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTmwePw68Zzr4LTnhuQawIVwACgYKAS8SARISFQHGX2Mi5w-azWADWxDmZxb3A5Sy9xoVAUF8yKrmwuHIyNUJ_t1ajyozvJSF0076
@@ -51,10 +47,6 @@
 .youtube.com	TRUE	/	TRUE	0	YSC	cCqb6lMPnWU
 .youtube.com	TRUE	/	TRUE	1789048412	__Secure-ROLLOUT_TOKEN	CNydnejN65zQowEQqMvbkd-akwMYj9io_cSfkwM%3D
 
-# Netscape HTTP Cookie File
-# https://curl.haxx.se/rfc/cookie_spec.html
-# This is a generated file! Do not edit.
-
 .youtube.com	TRUE	/	FALSE	1807891287	SID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTwChJ65bwvB3OjMQq-2oNKQACgYKAWsSARISFQHGX2MiVdD7lwNubPf--WOYLs7OLhoVAUF8yKrKX4PJcO8136wA1-BiwgWg0076
 .youtube.com	TRUE	/	TRUE	1807891287	__Secure-1PSID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTfGXhWMwvsu_sx-tFdEHdTAACgYKAfgSARISFQHGX2MiLtb2LcGdBfbPbw9G4GeNaRoVAUF8yKpq1gdAK2rhnUTvAmdDTaZu0076
 .youtube.com	TRUE	/	TRUE	1807891287	__Secure-3PSID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTmwePw68Zzr4LTnhuQawIVwACgYKAS8SARISFQHGX2Mi5w-azWADWxDmZxb3A5Sy9xoVAUF8yKrmwuHIyNUJ_t1ajyozvJSF0076
@@ -77,10 +69,6 @@
 .youtube.com	TRUE	/	TRUE	1789048415	VISITOR_PRIVACY_METADATA	CgJORxIEGgAgUA%3D%3D
 .youtube.com	TRUE	/	TRUE	0	YSC	cCqb6lMPnWU
 .youtube.com	TRUE	/	TRUE	1789048412	__Secure-ROLLOUT_TOKEN	CNydnejN65zQowEQqMvbkd-akwMYj9io_cSfkwM%3D
-
-# Netscape HTTP Cookie File
-# https://curl.haxx.se/rfc/cookie_spec.html
-# This is a generated file! Do not edit.
 
 .youtube.com	TRUE	/	FALSE	1807891287	SID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTwChJ65bwvB3OjMQq-2oNKQACgYKAWsSARISFQHGX2MiVdD7lwNubPf--WOYLs7OLhoVAUF8yKrKX4PJcO8136wA1-BiwgWg0076
 .youtube.com	TRUE	/	TRUE	1807891287	__Secure-1PSID	g.a0007ggWkuVFceve387LiqqOCHdwWQRA09KjZeVub-gneHxBXymTfGXhWMwvsu_sx-tFdEHdTAACgYKAfgSARISFQHGX2MiLtb2LcGdBfbPbw9G4GeNaRoVAUF8yKpq1gdAK2rhnUTvAmdDTaZu0076
