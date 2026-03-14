@@ -47,7 +47,7 @@ def extract():
     if not video_id:
         return jsonify({"error": "Invalid YouTube URL"}), 400
 
-    # Expire cache
+    # Expire old cache entries
     now = time.time()
     cached = CACHE.get(video_id)
     if cached:
@@ -58,7 +58,7 @@ def extract():
             del CACHE[video_id]
 
     try:
-        # Rate control
+        # Rate control: ensure a small delay between yt-dlp requests.
         global LAST_REQUEST_TIME
         now = time.time()
         elapsed = now - LAST_REQUEST_TIME
@@ -111,6 +111,7 @@ def extract():
             acodec = f.get("acodec")
             height = f.get("height") or 0
             abr = f.get("abr") or 0
+
             if "m3u8" in stream_url:
                 continue
 
@@ -167,146 +168,6 @@ def extract():
         return jsonify({"error": "Extraction failed", "detail": str(e)}), 500
     except Exception as e:
         return jsonify({"error": "Extraction failed", "detail": str(e)}), 500
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)    try:
-        # Rate control: ensure a small delay between yt-dlp requests.
-        global LAST_REQUEST_TIME
-        now = time.time()
-        elapsed = now - LAST_REQUEST_TIME
-        if elapsed < RATE_LIMIT_SECONDS:
-            time.sleep(RATE_LIMIT_SECONDS - elapsed)
-        LAST_REQUEST_TIME = time.time()
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "cookiefile": "cookies.txt"
-            "nocheckcertificate": True,
-            "socket_timeout": 20,
-            "age_limit": 99,  # Allow age-restricted content
-            "geo_bypass": True,  # Bypass geo-restrictions
-            "geo_bypass_country": "US",
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9"
-            },
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["android"]
-                }
-            },
-            # Don't request a specific output format here; we only need metadata.
-            # Requesting a format that doesn't exist can cause a "Requested format is not available" error.
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-        formats = info.get("formats", [])
-
-        progressive_url = None
-        video_only_url = None
-        audio_only_url = None
-
-        best_video_height = -1
-        best_audio_bitrate = -1
-
-        for f in formats:
-
-            stream_url = f.get("url")
-            if not stream_url:
-                continue
-
-            ext = f.get("ext")
-            vcodec = f.get("vcodec")
-            acodec = f.get("acodec")
-            height = f.get("height") or 0
-            abr = f.get("abr") or 0
-
-            # Skip HLS playlists
-            if "m3u8" in stream_url:
-                continue
-
-            # Progressive stream (video + audio)
-            # Accept any container (mp4/webm/etc) as long as it contains both video and audio.
-            if vcodec != "none" and acodec != "none":
-                progressive_url = stream_url
-                break
-
-            # Video-only stream
-            if vcodec != "none" and acodec == "none":
-                if height > best_video_height:
-                    best_video_height = height
-                    video_only_url = stream_url
-
-            # Audio-only stream
-            if acodec != "none" and vcodec == "none":
-                if abr > best_audio_bitrate:
-                    best_audio_bitrate = abr
-                    audio_only_url = stream_url
-
-        result = {
-            "title": info.get("title"),
-            "duration": info.get("duration"),
-            "thumbnail": info.get("thumbnail")
-        }
-
-        if progressive_url:
-            result["type"] = "progressive"
-            result["url"] = progressive_url
-
-        elif video_only_url and audio_only_url:
-            result["type"] = "adaptive"
-            result["video_url"] = video_only_url
-            result["audio_url"] = audio_only_url
-
-        elif video_only_url:
-            result["type"] = "video_only"
-            result["video_url"] = video_only_url
-
-        elif audio_only_url:
-            result["type"] = "audio_only"
-            result["audio_url"] = audio_only_url
-
-        else:
-            # No usable streams were found; return a sample of the available formats
-            # so the caller can diagnose what is available.
-            format_info = [
-                {
-                    "format_id": f.get("format_id"),
-                    "ext": f.get("ext"),
-                    "vcodec": f.get("vcodec"),
-                    "acodec": f.get("acodec"),
-                }
-                for f in formats  # Show all formats for debugging
-            ]
-            return (
-                jsonify({
-                    "error": "No playable streams found",
-                    "total_formats": len(formats),
-                    "available_formats": format_info,
-                }),
-                500,
-            )
-
-        return jsonify(result)
-
-    except yt_dlp.utils.DownloadError as e:
-        # Provide better error info for common yt-dlp failures.
-        return jsonify({
-            "error": "Extraction failed",
-            "detail": str(e)
-        }), 500
-
-    except Exception as e:
-        return jsonify({
-            "error": "Extraction failed",
-            "detail": str(e)
-        }), 500
 
 
 if __name__ == "__main__":
