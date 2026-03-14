@@ -15,7 +15,7 @@ CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 RATE_LIMIT_SECONDS = 1
 LAST_REQUEST_TIME = 0
 
-# Improved YouTube ID detection
+# Improved YouTube ID regex
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})")
 
 
@@ -43,7 +43,7 @@ def _has_valid_cookies_file(path="cookies.txt"):
         return False
 
 
-def _build_ydl_opts(use_cookies=True, format_spec="bv*+ba/b/bv+ba"):
+def _build_ydl_opts(use_cookies=True):
 
     ydl_opts = {
         "quiet": True,
@@ -57,7 +57,10 @@ def _build_ydl_opts(use_cookies=True, format_spec="bv*+ba/b/bv+ba"):
         "age_limit": 99,
         "geo_bypass": True,
         "geo_bypass_country": "US",
-        "format": format_spec,
+
+        # Format fallback chain (prevents format errors)
+        "format": "bv*+ba/b/bv+ba",
+
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -66,6 +69,8 @@ def _build_ydl_opts(use_cookies=True, format_spec="bv*+ba/b/bv+ba"):
             ),
             "Accept-Language": "en-US,en;q=0.9",
         },
+
+        # Helps reduce bot detection
         "extractor_args": {
             "youtube": {
                 "player_client": ["android"]
@@ -137,6 +142,7 @@ def extract():
 
         try:
             info = future.result(timeout=25)
+
         except TimeoutError:
             future.cancel()
 
@@ -171,7 +177,7 @@ def extract():
             height = f.get("height") or 0
             abr = f.get("abr") or 0
 
-            # Progressive (video+audio)
+            # Progressive stream
             if vcodec != "none" and acodec != "none":
                 progressive_url = stream_url
                 break
@@ -257,5 +263,12 @@ def extract():
         }), 500
 
 
+# Important for Render
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+
+    port = int(os.environ.get("PORT", 10000))
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
