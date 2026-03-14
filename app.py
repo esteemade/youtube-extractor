@@ -7,19 +7,19 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 app = Flask(__name__)
 
-# Cache (Video ID -> (timestamp, payload))
+# Cache (video_id -> (timestamp, payload))
 CACHE = {}
 CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 
-# Rate control
+# Rate limiting
 RATE_LIMIT_SECONDS = 1
 LAST_REQUEST_TIME = 0
 
-# Improved YouTube ID regex
+# Improved YouTube ID detection
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})")
 
 
-def extract_video_id(url: str):
+def extract_video_id(url):
     if not url:
         return None
 
@@ -43,7 +43,7 @@ def _has_valid_cookies_file(path="cookies.txt"):
         return False
 
 
-def _build_ydl_opts(use_cookies=True, format_spec="bestvideo+bestaudio/best"):
+def _build_ydl_opts(use_cookies=True, format_spec="bv*+ba/b/bv+ba"):
 
     ydl_opts = {
         "quiet": True,
@@ -70,7 +70,7 @@ def _build_ydl_opts(use_cookies=True, format_spec="bestvideo+bestaudio/best"):
             "youtube": {
                 "player_client": ["android"]
             }
-        },
+        }
     }
 
     if use_cookies and _has_valid_cookies_file("cookies.txt"):
@@ -121,6 +121,7 @@ def extract():
     try:
 
         global LAST_REQUEST_TIME
+
         now = time.time()
         elapsed = now - LAST_REQUEST_TIME
 
@@ -138,6 +139,7 @@ def extract():
             info = future.result(timeout=25)
         except TimeoutError:
             future.cancel()
+
             return jsonify({
                 "error": "Extraction timeout",
                 "detail": "YouTube took too long to respond"
@@ -155,19 +157,21 @@ def extract():
         for f in formats:
 
             stream_url = f.get("url")
+
             if not stream_url:
                 continue
 
-            # skip HLS playlists
-            if "m3u8" in stream_url:
+            # Skip most HLS streams
+            if "m3u8" in stream_url and "googlevideo" not in stream_url:
                 continue
 
             vcodec = f.get("vcodec")
             acodec = f.get("acodec")
+
             height = f.get("height") or 0
             abr = f.get("abr") or 0
 
-            # Progressive stream
+            # Progressive (video+audio)
             if vcodec != "none" and acodec != "none":
                 progressive_url = stream_url
                 break
@@ -187,7 +191,7 @@ def extract():
         result = {
             "title": info.get("title"),
             "duration": info.get("duration"),
-            "thumbnail": info.get("thumbnail"),
+            "thumbnail": info.get("thumbnail")
         }
 
         if progressive_url:
@@ -225,7 +229,6 @@ def extract():
                 "available_formats": format_info
             }), 500
 
-        # Store in cache
         CACHE[video_id] = (time.time(), result)
 
         return jsonify(result)
@@ -238,7 +241,7 @@ def extract():
 
             return jsonify({
                 "error": "Authentication required",
-                "detail": "YouTube requires login cookies."
+                "detail": "YouTube requires login cookies"
             }), 403
 
         return jsonify({
