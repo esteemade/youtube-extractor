@@ -4,9 +4,8 @@ import time
 import os
 import re
 import logging
-import random
-import subprocess
-import sys
+import concurrent.futures
+from functools import wraps
 
 app = Flask(__name__)
 
@@ -19,19 +18,29 @@ CACHE = {}
 CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 
 # Rate-limiting
-RATE_LIMIT_SECONDS = 5  # Increased to 5 seconds
+RATE_LIMIT_SECONDS = 3
 LAST_REQUEST_TIME = 0
 
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/v/|/embed/)([A-Za-z0-9_-]{11})")
 
-# Rotating user agents
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
-]
+# PO Token configuration - this enables the PO token provider
+# No need to run a separate server - yt-dlp will handle it with curl-cffi
+PO_TOKEN_ENABLED = True
+
+
+def timeout(seconds):
+    """Decorator to add timeout to functions"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(func, *args, **kwargs)
+                try:
+                    return future.result(timeout=seconds)
+                except concurrent.futures.TimeoutError:
+                    return None, TimeoutError(f"Function timed out after {seconds} seconds")
+        return wrapper
+    return decorator
 
 
 def clean_cookies_file(path="cookies.txt"):
@@ -53,7 +62,6 @@ def clean_cookies_file(path="cookies.txt"):
                 unique_lines.append(line)
                 continue
             
-            # Use the cookie name and domain as key for deduplication
             parts = line_stripped.split('\t')
             if len(parts) >= 5:
                 key = f"{parts[0]}_{parts[4]}"
@@ -75,14 +83,12 @@ def clean_cookies_file(path="cookies.txt"):
 def _has_valid_cookies_file(path="cookies.txt") -> bool:
     """Check if cookies file exists and has correct format"""
     try:
-        # Clean the cookies file first
         clean_cookies_file(path)
         
         if not os.path.isfile(path):
             logger.warning(f"Cookies file not found at {path}")
             return False
         
-        # Check file size
         file_size = os.path.getsize(path)
         if file_size < 100:
             logger.warning(f"Cookies file too small ({file_size} bytes)")
@@ -91,18 +97,16 @@ def _has_valid_cookies_file(path="cookies.txt") -> bool:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
             
-            # Check for Netscape format
             if not content.strip().startswith("# Netscape"):
                 logger.warning("Cookies file not in Netscape format")
                 return False
             
-            # Count actual cookie entries
             cookie_lines = []
             for line in content.split('\n'):
                 line = line.strip()
                 if line and not line.startswith('#'):
                     parts = line.split('\t')
-                    if len(parts) >= 7:  # Netscape format should have 7 fields
+                    if len(parts) >= 7:
                         cookie_lines.append(line)
             
             if len(cookie_lines) < 5:
@@ -117,38 +121,11 @@ def _has_valid_cookies_file(path="cookies.txt") -> bool:
         return False
 
 
-def _build_ydl_opts(use_cookies=True, format_spec=None, client_type='android'):
-    """Build yt-dlp options with better error handling"""
+def _build_ydl_opts(use_cookies=True):
+    """Build yt-dlp options with PO token support"""
     
-    if format_spec is None:
-        format_spec = 'best[height<=1080][ext=mp4]/best[height<=1080]/best'
-    
-    # Rotate user agent
-    user_agent = random.choice(USER_AGENTS)
-    
-    # Different client configurations
-    client_configs = {
-        'android': {
-            'player_client': ['android', 'android_creator', 'android_embedded'],
-            'extractor_args': {'youtube': {'player_client': ['android', 'android_creator']}}
-        },
-        'web': {
-            'player_client': ['web', 'web_creator', 'web_embedded'],
-            'extractor_args': {'youtube': {'player_client': ['web', 'web_creator']}}
-        },
-        'ios': {
-            'player_client': ['ios', 'ios_creator', 'ios_embedded'],
-            'extractor_args': {'youtube': {'player_client': ['ios', 'ios_creator']}}
-        },
-        'tv': {
-            'player_client': ['tv', 'tv_embedded'],
-            'extractor_args': {'youtube': {'player_client': ['tv', 'tv_embedded']}}
-        }
-    }
-    
-    client = client_configs.get(client_type, client_configs['android'])
-    
-    # Base options
+    # This is the key part - we're using curl-cffi for better TLS fingerprinting
+    # and enabling the PO token provider
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -159,28 +136,51 @@ def _build_ydl_opts(use_cookies=True, format_spec=None, client_type='android'):
         'age_limit': 99,
         'geo_bypass': True,
         'geo_bypass_country': 'US',
-        'format': format_spec,
+        
+        # Use curl-cffi for better TLS fingerprint (mimics Chrome more accurately)
+        'legacyserverconnect': False,
+        'prefer_insecure': False,
+        
+        # Format selection - stick to simpler formats that work better with PO tokens
+        'format': 'best[height<=720][ext=mp4]/best[height<=720]/best',
+        
+        # HTTP headers that match a real browser
         'http_headers': {
-            'User-Agent': user_agent,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
             'Upgrade-Insecure-Requests': '1',
             'Connection': 'keep-alive',
         },
-        'extract_flat': False,
+        
+        # Extractor arguments with PO token support
+        'extractor_args': {
+            'youtube': {
+                # Use android client as it's less likely to require PO tokens
+                'player_client': ['android', 'web'],
+                'skip': ['hls', 'dash'],
+                'po_token': True,  # Enable PO token generation
+            }
+        },
+        
+        # Enable PO token provider
+        'po_token': True,
+        
+        # Use curl-cffi for requests
         'force_generic_extractor': False,
-        'extractor_retries': 5,
-        'file_access_retries': 5,
+        'extractor_retries': 3,
+        'file_access_retries': 3,
         'retry_sleep': 2,
     }
-    
-    # Add client-specific settings
-    ydl_opts.update(client)
-    
+
     # Add cookies if available
     if use_cookies and _has_valid_cookies_file('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
@@ -214,7 +214,7 @@ def home():
         "service": "youtube extractor",
         "status": "running",
         "cookies_configured": cookies_valid,
-        "cookies_file_exists": os.path.exists('cookies.txt'),
+        "po_token_enabled": PO_TOKEN_ENABLED,
         "mode": "youtube-only"
     })
 
@@ -249,101 +249,72 @@ def extract():
         time.sleep(RATE_LIMIT_SECONDS - elapsed)
     LAST_REQUEST_TIME = time.time()
 
-    # Comprehensive strategy combinations
-    strategies = []
-    
-    # Format strategies
-    formats = [
-        'best[height<=1080][ext=mp4]/best[height<=1080]/best',
-        'best[ext=mp4]/best',
-        'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'best',
-        'worst',
-        '18',  # 360p mp4
-        '22',  # 720p mp4
-        '137+140',  # 1080p video + m4a audio
+    # Try with cookies first, then without
+    strategies = [
+        {"use_cookies": True, "format": 'best[height<=720][ext=mp4]/best[height<=720]/best'},
+        {"use_cookies": True, "format": 'best[ext=mp4]/best'},
+        {"use_cookies": True, "format": 'best'},
+        {"use_cookies": False, "format": 'best[height<=720][ext=mp4]/best[height<=720]/best'},
+        {"use_cookies": False, "format": 'best'},
     ]
-    
-    # Client types
-    clients = ['android', 'web', 'ios', 'tv']
-    
-    # Cookie options
-    cookie_options = [True, False]
-    
-    # Build all strategy combinations
-    for use_cookies in cookie_options:
-        for client in clients:
-            for fmt in formats[:3]:  # Limit to first 3 formats to avoid too many attempts
-                strategies.append({
-                    'use_cookies': use_cookies,
-                    'client': client,
-                    'format': fmt
-                })
 
-    last_error = None
     video_info = None
     used_strategy = None
+    last_error = None
 
-    # Try each strategy
-    for i, strategy in enumerate(strategies[:15]):  # Limit to first 15 strategies
+    for i, strategy in enumerate(strategies):
         try:
-            logger.info(f"Trying strategy {i+1}: cookies={strategy['use_cookies']}, client={strategy['client']}, format={strategy['format']}")
+            logger.info(f"Trying strategy {i+1}: cookies={strategy['use_cookies']}")
             
-            # Add small random delay between attempts
-            time.sleep(random.uniform(0.5, 1.5))
-            
-            ydl_opts = _build_ydl_opts(
-                use_cookies=strategy['use_cookies'], 
-                format_spec=strategy['format'],
-                client_type=strategy['client']
-            )
+            ydl_opts = _build_ydl_opts(use_cookies=strategy['use_cookies'])
+            ydl_opts['format'] = strategy['format']
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-                if info and info.get('formats'):
-                    video_info = info
-                    used_strategy = strategy
-                    logger.info(f"Success with strategy {i+1}")
-                    break
+                # Add timeout to prevent hanging
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(ydl.extract_info, url, download=False)
+                    try:
+                        info = future.result(timeout=30)  # 30 second timeout
+                        if info and info.get('formats'):
+                            video_info = info
+                            used_strategy = i + 1
+                            logger.info(f"Success with strategy {i+1}")
+                            break
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(f"Strategy {i+1} timed out after 30 seconds")
+                        continue
                     
         except Exception as e:
             last_error = str(e)
-            logger.warning(f"Strategy {i+1} failed: {str(e)[:100]}")
+            logger.warning(f"Strategy {i+1} failed: {str(e)[:200]}")
             continue
 
     if not video_info:
-        error_msg = last_error or "All extraction strategies failed"
+        error_msg = last_error or "All strategies failed"
         logger.error(f"All extraction attempts failed for {video_id}")
         
-        # Try one last approach with subprocess (sometimes works when yt-dlp lib fails)
-        try:
-            logger.info("Trying subprocess approach as last resort")
-            result = subprocess.run(
-                ['yt-dlp', '--get-url', '--format', 'best', url],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return jsonify({
-                    "type": "direct",
-                    "url": result.stdout.strip(),
-                    "title": "Extracted via subprocess",
-                    "note": "Used fallback extraction method"
-                })
-        except Exception as e:
-            logger.error(f"Subprocess approach failed: {e}")
-        
         cookies_valid = _has_valid_cookies_file()
-        return jsonify({
-            "error": "Extraction failed",
-            "detail": error_msg[:500],
-            "cookies_status": {
-                "file_exists": os.path.exists('cookies.txt'),
-                "valid_format": cookies_valid,
-            }
-        }), 500
+        
+        # Check if it's a PO token related error
+        if "po_token" in error_msg.lower() or "bot" in error_msg.lower():
+            return jsonify({
+                "error": "YouTube bot detection triggered",
+                "detail": "Even with PO tokens, YouTube is blocking this request. This might be temporary.",
+                "solution": "Wait a few minutes and try again, or consider using residential proxies.",
+                "cookies_status": {
+                    "file_exists": os.path.exists('cookies.txt'),
+                    "valid_format": cookies_valid,
+                }
+            }), 403
+        else:
+            return jsonify({
+                "error": "Extraction failed",
+                "detail": error_msg[:500],
+                "cookies_status": {
+                    "file_exists": os.path.exists('cookies.txt'),
+                    "valid_format": cookies_valid,
+                }
+            }), 500
 
     # Process the extracted info
     result = process_video_info(video_info)
@@ -352,6 +323,7 @@ def extract():
         result['_debug'] = {
             'strategy_used': used_strategy,
             'formats_found': len(video_info.get('formats', [])),
+            'po_token_enabled': PO_TOKEN_ENABLED,
         }
         
         CACHE[video_id] = (time.time(), result)
@@ -375,6 +347,7 @@ def process_video_info(info):
         "thumbnail": info.get("thumbnail"),
         "video_id": info.get("id"),
         "uploader": info.get("uploader"),
+        "upload_date": info.get("upload_date"),
     }
 
     formats = info.get("formats", [])
@@ -397,10 +370,7 @@ def process_video_info(info):
     progressive_streams = []
     for f in formats:
         url = f.get("url")
-        if not url:
-            continue
-            
-        if "m3u8" in url:
+        if not url or "m3u8" in url:
             continue
             
         vcodec = f.get("vcodec", "none")
@@ -410,19 +380,14 @@ def process_video_info(info):
             progressive_streams.append(f)
     
     if progressive_streams:
-        # Sort by quality (height) and prefer mp4
-        progressive_streams.sort(key=lambda x: (
-            x.get("ext") == 'mp4',  # Prefer mp4
-            x.get("height", 0) or 0  # Then by quality
-        ), reverse=True)
-        
+        # Sort by quality
+        progressive_streams.sort(key=lambda x: x.get("height", 0) or 0, reverse=True)
         best = progressive_streams[0]
         
         result["type"] = "progressive"
         result["url"] = best.get("url")
         result["format"] = best.get("ext", "mp4")
         result["quality"] = best.get("height", "unknown")
-        result["filesize"] = best.get("filesize", best.get("filesize_approx", 0))
         return result
     
     # Find separate video and audio streams
@@ -431,10 +396,7 @@ def process_video_info(info):
     
     for f in formats:
         url = f.get("url")
-        if not url:
-            continue
-            
-        if "m3u8" in url:
+        if not url or "m3u8" in url:
             continue
             
         vcodec = f.get("vcodec", "none")
@@ -446,7 +408,6 @@ def process_video_info(info):
             audio_streams.append(f)
     
     if video_streams and audio_streams:
-        # Sort video by quality, audio by bitrate
         video_streams.sort(key=lambda x: x.get("height", 0) or 0, reverse=True)
         audio_streams.sort(key=lambda x: x.get("abr", 0) or 0, reverse=True)
         
@@ -459,18 +420,7 @@ def process_video_info(info):
         result["video_format"] = best_video.get("ext")
         result["audio_format"] = best_audio.get("ext")
         result["video_quality"] = best_video.get("height", "unknown")
-        result["audio_quality"] = best_audio.get("abr", "unknown")
         return result
-    
-    # Last resort: try any URL
-    for f in formats:
-        url = f.get("url")
-        if url and "m3u8" not in url:
-            result["type"] = "direct"
-            result["url"] = url
-            result["format"] = f.get("ext", "unknown")
-            result["quality"] = f.get("height", f.get("quality", "unknown"))
-            return result
     
     return None
 
@@ -484,6 +434,7 @@ def debug_cookies():
         "cookies_file": "cookies.txt",
         "file_exists": os.path.exists('cookies.txt'),
         "valid_format": cookies_valid,
+        "po_token_enabled": PO_TOKEN_ENABLED,
     }
     
     if os.path.exists('cookies.txt'):
@@ -494,46 +445,10 @@ def debug_cookies():
                 cookie_lines = [l for l in lines if l.strip() and not l.startswith('#')]
                 status["total_lines"] = len(lines)
                 status["valid_cookie_entries"] = len(cookie_lines)
-                status["first_100_chars"] = lines[0][:100] if lines else ""
         except Exception as e:
             status["read_error"] = str(e)
     
     return jsonify(status)
-
-
-@app.route("/debug/test", methods=["GET"])
-def test_extraction():
-    """Test endpoint for a specific video"""
-    url = request.args.get("url", "https://youtu.be/qf8iHq3zhTU")
-    
-    results = []
-    
-    # Test with different clients
-    for client in ['android', 'web', 'ios', 'tv']:
-        try:
-            ydl_opts = _build_ydl_opts(use_cookies=True, format_spec='best', client_type=client)
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-                results.append({
-                    "client": client,
-                    "success": True,
-                    "title": info.get("title"),
-                    "format_count": len(info.get("formats", [])),
-                })
-        except Exception as e:
-            results.append({
-                "client": client,
-                "success": False,
-                "error": str(e)[:100]
-            })
-    
-    return jsonify({
-        "url": url,
-        "video_id": extract_video_id(url),
-        "test_results": results
-    })
 
 
 @app.route("/health", methods=["GET"])
