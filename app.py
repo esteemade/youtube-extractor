@@ -23,9 +23,9 @@ LAST_REQUEST_TIME = 0
 
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/v/|/embed/)([A-Za-z0-9_-]{11})")
 
-# PO Token configuration - this enables the PO token provider
-# No need to run a separate server - yt-dlp will handle it with curl-cffi
+# PO Token configuration
 PO_TOKEN_ENABLED = True
+PO_TOKEN_SERVER_URL = "http://localhost:4416"  # Local token server
 
 
 def timeout(seconds):
@@ -124,8 +124,6 @@ def _has_valid_cookies_file(path="cookies.txt") -> bool:
 def _build_ydl_opts(use_cookies=True):
     """Build yt-dlp options with PO token support"""
     
-    # This is the key part - we're using curl-cffi for better TLS fingerprinting
-    # and enabling the PO token provider
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -137,14 +135,14 @@ def _build_ydl_opts(use_cookies=True):
         'geo_bypass': True,
         'geo_bypass_country': 'US',
         
-        # Use curl-cffi for better TLS fingerprint (mimics Chrome more accurately)
+        # Use curl-cffi for better TLS fingerprint
         'legacyserverconnect': False,
         'prefer_insecure': False,
         
-        # Format selection - stick to simpler formats that work better with PO tokens
+        # Format selection
         'format': 'best[height<=720][ext=mp4]/best[height<=720]/best',
         
-        # HTTP headers that match a real browser
+        # HTTP headers
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -164,15 +162,18 @@ def _build_ydl_opts(use_cookies=True):
         # Extractor arguments with PO token support
         'extractor_args': {
             'youtube': {
-                # Use android client as it's less likely to require PO tokens
-                'player_client': ['android', 'web'],
+                'player_client': ['web', 'android'],
                 'skip': ['hls', 'dash'],
-                'po_token': True,  # Enable PO token generation
+            },
+            'youtubepot': {
+                'bgutilhttp': {
+                    'base_url': PO_TOKEN_SERVER_URL,  # Use local token server
+                }
             }
         },
         
         # Enable PO token provider
-        'po_token': True,
+        'getpot_bgutilhttp': True,
         
         # Use curl-cffi for requests
         'force_generic_extractor': False,
@@ -215,6 +216,7 @@ def home():
         "status": "running",
         "cookies_configured": cookies_valid,
         "po_token_enabled": PO_TOKEN_ENABLED,
+        "po_token_server": PO_TOKEN_SERVER_URL,
         "mode": "youtube-only"
     })
 
@@ -274,7 +276,7 @@ def extract():
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(ydl.extract_info, url, download=False)
                     try:
-                        info = future.result(timeout=30)  # 30 second timeout
+                        info = future.result(timeout=30)
                         if info and info.get('formats'):
                             video_info = info
                             used_strategy = i + 1
@@ -295,26 +297,14 @@ def extract():
         
         cookies_valid = _has_valid_cookies_file()
         
-        # Check if it's a PO token related error
-        if "po_token" in error_msg.lower() or "bot" in error_msg.lower():
-            return jsonify({
-                "error": "YouTube bot detection triggered",
-                "detail": "Even with PO tokens, YouTube is blocking this request. This might be temporary.",
-                "solution": "Wait a few minutes and try again, or consider using residential proxies.",
-                "cookies_status": {
-                    "file_exists": os.path.exists('cookies.txt'),
-                    "valid_format": cookies_valid,
-                }
-            }), 403
-        else:
-            return jsonify({
-                "error": "Extraction failed",
-                "detail": error_msg[:500],
-                "cookies_status": {
-                    "file_exists": os.path.exists('cookies.txt'),
-                    "valid_format": cookies_valid,
-                }
-            }), 500
+        return jsonify({
+            "error": "Extraction failed",
+            "detail": error_msg[:500],
+            "cookies_status": {
+                "file_exists": os.path.exists('cookies.txt'),
+                "valid_format": cookies_valid,
+            }
+        }), 500
 
     # Process the extracted info
     result = process_video_info(video_info)
