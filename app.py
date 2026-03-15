@@ -4,6 +4,7 @@ import time
 import os
 import re
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 app = Flask(__name__)
@@ -12,12 +13,12 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# In-memory caching for extracted data (Video ID -> (timestamp, payload))
+# In-memory caching for extracted data
 CACHE = {}
 CACHE_TTL_SECONDS = 60 * 60 * 4  # 4 hours
 
 # Rate-limiting
-RATE_LIMIT_SECONDS = 2  # Increased to 2 seconds
+RATE_LIMIT_SECONDS = 3  # Increased to 3 seconds
 LAST_REQUEST_TIME = 0
 
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/v/|/embed/)([A-Za-z0-9_-]{11})")
@@ -31,7 +32,7 @@ def _has_valid_cookies_file(path="cookies.txt") -> bool:
             return False
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             first_line = f.readline().strip()
-            # Also check if file has content beyond the header
+            # Check if file has content beyond the header
             second_line = f.readline().strip()
             return first_line.startswith("# Netscape") and bool(second_line)
     except Exception as e:
@@ -42,9 +43,9 @@ def _has_valid_cookies_file(path="cookies.txt") -> bool:
 def _build_ydl_opts(use_cookies=True, format_spec=None):
     """Build yt-dlp options with better error handling"""
     
-    # Progressive format as default
+    # More flexible format specification
     if format_spec is None:
-        format_spec = 'best[ext=mp4]/best'  # Prefer mp4 format
+        format_spec = 'best/bestvideo+bestaudio/best'
     
     ydl_opts = {
         'quiet': True,
@@ -65,7 +66,7 @@ def _build_ydl_opts(use_cookies=True, format_spec=None):
         },
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'],  # Try multiple clients
+                'player_client': ['android', 'web', 'ios'],  # Try multiple clients
                 'skip': ['hls', 'dash'],  # Skip some formats to speed up extraction
             }
         },
@@ -144,57 +145,48 @@ def extract():
         time.sleep(RATE_LIMIT_SECONDS - elapsed)
     LAST_REQUEST_TIME = time.time()
 
-    # Try different format strategies
-    format_strategies = [
-        'best[ext=mp4]/best',  # Best mp4 format
-        'best',  # Best quality regardless of container
-        'bestvideo+bestaudio/best',  # Adaptive formats
+    # Try multiple extraction strategies
+    strategies = [
+        # Strategy 1: Try with cookies, best format
+        {"use_cookies": True, "format": None},
+        # Strategy 2: Try with cookies, specific mp4 format
+        {"use_cookies": True, "format": "best[ext=mp4]"},
+        # Strategy 3: Try with cookies, best audio+video
+        {"use_cookies": True, "format": "bestvideo+bestaudio"},
+        # Strategy 4: Try without cookies, best format
+        {"use_cookies": False, "format": None},
+        # Strategy 5: Try without cookies, specific mp4
+        {"use_cookies": False, "format": "best[ext=mp4]"},
     ]
 
-    result = None
     last_error = None
+    video_info = None
 
-    for format_spec in format_strategies:
+    for i, strategy in enumerate(strategies):
         try:
-            logger.info(f"Trying format strategy: {format_spec} for video {video_id}")
+            logger.info(f"Trying strategy {i+1}: cookies={strategy['use_cookies']}, format={strategy['format']}")
             
-            # Try with cookies first
-            ydl_opts = _build_ydl_opts(use_cookies=True, format_spec=format_spec)
+            ydl_opts = _build_ydl_opts(
+                use_cookies=strategy['use_cookies'], 
+                format_spec=strategy['format']
+            )
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Extract info
                 info = ydl.extract_info(url, download=False)
                 
-            # Process the extracted info
-            result = process_video_info(info)
-            if result:
-                logger.info(f"Successfully extracted video {video_id} with format {format_spec}")
-                break
-                
+                if info:
+                    video_info = info
+                    logger.info(f"Strategy {i+1} succeeded")
+                    break
+                    
         except Exception as e:
             last_error = str(e)
-            logger.warning(f"Failed with format {format_spec}: {e}")
-            
-            # If cookies error, try without cookies
-            if "cookies" in str(e).lower() or "sign in" in str(e).lower():
-                try:
-                    logger.info(f"Retrying without cookies for {video_id}")
-                    ydl_opts = _build_ydl_opts(use_cookies=False, format_spec=format_spec)
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                    result = process_video_info(info)
-                    if result:
-                        break
-                except Exception as e2:
-                    logger.error(f"Also failed without cookies: {e2}")
-                    continue
+            logger.warning(f"Strategy {i+1} failed: {e}")
+            continue
 
-    if result:
-        # Cache the result
-        CACHE[video_id] = (time.time(), result)
-        return jsonify(result)
-    else:
-        # Provide helpful error message
-        error_msg = last_error or "Unknown error"
+    if not video_info:
+        error_msg = last_error or "All extraction strategies failed"
         logger.error(f"All extraction attempts failed for {video_id}: {error_msg}")
         
         if "Sign in" in error_msg or "bot" in error_msg:
@@ -209,71 +201,159 @@ def extract():
                 "detail": error_msg
             }), 500
 
+    # Process the extracted info
+    result = process_video_info(video_info)
+    
+    if result:
+        # Cache the result
+        CACHE[video_id] = (time.time(), result)
+        return jsonify(result)
+    else:
+        return jsonify({
+            "error": "Could not extract playable streams",
+            "detail": "No suitable video/audio streams found"
+        }), 500
+
 
 def process_video_info(info):
     """Process extracted video info and return standardized format"""
     if not info:
         return None
 
-    formats = info.get("formats", [])
-    
-    # Get the best available stream
+    # Basic info
     result = {
         "title": info.get("title"),
         "duration": info.get("duration"),
         "thumbnail": info.get("thumbnail"),
-        "video_id": info.get("id")
+        "video_id": info.get("id"),
+        "uploader": info.get("uploader"),
+        "upload_date": info.get("upload_date")
     }
 
     # Try to get direct URL from formats
+    formats = info.get("formats", [])
+    
+    # Log available formats for debugging
+    logger.info(f"Found {len(formats)} formats")
+    
+    # Priority 1: Find a progressive stream (video+audio combined)
     for f in formats:
         url = f.get("url")
-        if not url:
+        if not url or "m3u8" in url:
             continue
             
-        # Skip HLS playlists
-        if "m3u8" in url:
-            continue
-            
-        # Check if it's a progressive stream (has both video and audio)
-        if f.get("vcodec") != "none" and f.get("acodec") != "none":
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+        
+        # Check if it's a progressive stream
+        if vcodec != "none" and acodec != "none":
             result["type"] = "progressive"
             result["url"] = url
             result["format"] = f.get("ext", "mp4")
+            result["quality"] = f.get("height", "unknown")
+            result["filesize"] = f.get("filesize", f.get("filesize_approx", 0))
+            logger.info(f"Found progressive stream: {result['quality']}p")
             return result
     
-    # If no progressive stream found, try to combine video and audio
-    video_streams = [f for f in formats if f.get("vcodec") != "none" and f.get("acodec") == "none"]
-    audio_streams = [f for f in formats if f.get("acodec") != "none" and f.get("vcodec") == "none"]
+    # Priority 2: Try to combine video and audio streams
+    video_streams = []
+    audio_streams = []
+    
+    for f in formats:
+        url = f.get("url")
+        if not url or "m3u8" in url:
+            continue
+            
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+        
+        if vcodec != "none" and acodec == "none":
+            video_streams.append(f)
+        elif acodec != "none" and vcodec == "none":
+            audio_streams.append(f)
     
     if video_streams and audio_streams:
-        # Get best video and audio
-        best_video = max(video_streams, key=lambda x: x.get("height", 0))
-        best_audio = max(audio_streams, key=lambda x: x.get("abr", 0))
+        # Sort video streams by quality (height) and get the best
+        video_streams.sort(key=lambda x: x.get("height", 0), reverse=True)
+        # Sort audio streams by bitrate and get the best
+        audio_streams.sort(key=lambda x: x.get("abr", 0), reverse=True)
+        
+        best_video = video_streams[0]
+        best_audio = audio_streams[0]
         
         result["type"] = "adaptive"
         result["video_url"] = best_video.get("url")
         result["audio_url"] = best_audio.get("url")
         result["video_format"] = best_video.get("ext")
         result["audio_format"] = best_audio.get("ext")
+        result["video_quality"] = best_video.get("height", "unknown")
+        result["audio_quality"] = best_audio.get("abr", "unknown")
+        logger.info(f"Found adaptive streams: video={result['video_quality']}p, audio={result['audio_quality']}kbps")
         return result
     
-    # If no streams found, try to get from requested_formats
+    # Priority 3: Look for requested_formats (already combined by yt-dlp)
     requested_formats = info.get("requested_formats", [])
     if requested_formats:
         result["type"] = "adaptive"
-        result["video_url"] = requested_formats[0].get("url")
-        result["audio_url"] = requested_formats[1].get("url") if len(requested_formats) > 1 else None
-        return result
+        if len(requested_formats) >= 2:
+            result["video_url"] = requested_formats[0].get("url")
+            result["audio_url"] = requested_formats[1].get("url")
+            result["video_format"] = requested_formats[0].get("ext")
+            result["audio_format"] = requested_formats[1].get("ext")
+            logger.info("Using requested_formats from yt-dlp")
+            return result
     
-    # Last resort: try the main URL
+    # Priority 4: Try the main URL if nothing else worked
     main_url = info.get("url")
-    if main_url:
+    if main_url and "m3u8" not in main_url:
         result["type"] = "direct"
         result["url"] = main_url
+        result["format"] = info.get("ext", "unknown")
+        logger.info("Using direct URL from info")
         return result
     
+    # If we get here, no playable streams were found
+    logger.warning("No playable streams found in video info")
     return None
+
+
+@app.route("/formats", methods=["GET"])
+def list_formats():
+    """Debug endpoint to list all available formats for a video"""
+    url = request.args.get("url")
+    
+    if not url:
+        return jsonify({"error": "No URL provided"}), 400
+    
+    try:
+        ydl_opts = _build_ydl_opts(use_cookies=True, format_spec=None)
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            formats = []
+            for f in info.get("formats", []):
+                formats.append({
+                    "format_id": f.get("format_id"),
+                    "ext": f.get("ext"),
+                    "vcodec": f.get("vcodec"),
+                    "acodec": f.get("acodec"),
+                    "height": f.get("height"),
+                    "width": f.get("width"),
+                    "filesize": f.get("filesize"),
+                    "tbr": f.get("tbr"),
+                    "url_preview": f.get("url")[:100] if f.get("url") else None
+                })
+            
+            return jsonify({
+                "video_id": info.get("id"),
+                "title": info.get("title"),
+                "format_count": len(formats),
+                "formats": formats
+            })
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
